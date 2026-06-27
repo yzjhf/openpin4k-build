@@ -1,20 +1,17 @@
 /*
- * OpenPin4K -- VPX launch harness v4.  Compiled to "vpx.elf".
+ * OpenPin4K -- VPX launch harness v5.  Compiled to "vpx.elf".
  *
  * STORY SO FAR (cabinet logs, 2026-06-27):
- *   v3 got VPX actually running from the USB: table loaded, cabinet joystick +
- *   audio detected, Mali GPU (libmali g6p0) up, a 3840x2160@60 window created --
- *   then "BGFX initialization failed" -> exit(-1) (255), black screen.
- *   Cause: VPX's Player.GfxBackend defaulted to "Default" (auto), and BGFX
- *   auto-picked a backend the Mali GPU can't drive. Reported valid backends were
- *   OpenGL + Vulkan (NO OpenGLES compiled in). Mali wants GLES/Vulkan, so desktop
- *   OpenGL fails -> Vulkan is the likely winner.
+ *   v3: VPX ran fully from the USB (table, joystick, audio, Mali GPU, 4K window)
+ *       then "BGFX initialization failed" (Player.GfxBackend="Default" auto-pick
+ *       can't drive the Mali GPU; backends compiled = OpenGL + Vulkan, no GLES).
+ *   v4: tried backends in a loop but produced NO log on the USB -- it ran longer
+ *       and the cabinet launcher killed our process BEFORE the end-of-run step
+ *       that copies the log to the USB.
  *
- * This harness runs VPX from the USB bundle and TRIES BACKENDS IN ORDER
- * (Vulkan, OpenGL, OpenGLES) by writing Player.GfxBackend into VPinballX.ini
- * before each attempt. A backend that fails BGFX init dies in ~3s (we move on);
- * a backend that works keeps rendering past the probe window (we detect that and
- * leave the table up so it can be seen). Everything is logged back to the USB.
+ * v5 therefore SYNCS THE LOG TO THE USB AFTER EVERY STEP (and on SIGTERM), so we
+ * always capture progress even if we're killed mid-run. It still tries
+ * Player.GfxBackend = Vulkan -> OpenGL -> OpenGLES and reports the winner.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,17 +22,17 @@
 #include <limits.h>
 #include <time.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#define PROBE_SECONDS   10   /* survive this long with a backend => it works */
-#define SHOWCASE_SECONDS 45  /* once it works, keep it on screen this long */
+#define PROBE_SECONDS    10  /* survive this long with a backend => it works */
+#define SHOWCASE_SECONDS 40  /* once it works, keep it on screen this long */
 
-static FILE *LOG;
-static char  LOGP[PATH_MAX];
+static char LOGP[PATH_MAX];
 
-static void unescape(char *s)  /* /proc/mounts encodes spaces as \040 */
+static void unescape(char *s)
 {
     char *o = s;
     for (char *p = s; *p; ) {
@@ -63,7 +60,8 @@ static void copy_file(const char *src, const char *dst)
     close(in); close(out);
 }
 
-static void distribute_log(void)
+/* Copy the current log onto every FAT/exFAT volume holding this app. */
+static void sync_log_to_usb(void)
 {
     FILE *m = fopen("/proc/mounts", "r"); if (!m) return;
     char line[2048], dev[256], mp[PATH_MAX], fs[64];
@@ -81,13 +79,20 @@ static void distribute_log(void)
     fclose(m);
 }
 
-/* Write a minimal VPinballX.ini selecting a graphics backend. */
+/* Append a line to the log (flushed) and immediately mirror it to the USB. */
+static void logln(const char *fmt, ...)
+{
+    FILE *f = fopen(LOGP, "a");
+    if (f) { va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap); fputc('\n', f); fclose(f); }
+    sync_log_to_usb();
+}
+
+static void on_term(int sig) { logln("[harness] received signal %d -> syncing log and exiting.", sig); _exit(0); }
+
 static void write_ini(const char *inipath, const char *backend)
 {
     FILE *f = fopen(inipath, "w");
-    if (!f) { fprintf(LOG, "  (could not write ini %s: %s)\n", inipath, strerror(errno)); return; }
-    fprintf(f, "[Player]\nGfxBackend = %s\n", backend);
-    fclose(f);
+    if (f) { fprintf(f, "[Player]\nGfxBackend = %s\n", backend); fclose(f); }
 }
 
 int main(int argc, char **argv)
@@ -99,18 +104,21 @@ int main(int argc, char **argv)
     else strcpy(D, ".");
     if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, ".");
 
-    /* writable scratch for log + HOME */
     const char *scratch = D;
     const char *sc[] = { "/tmp", "/dev/shm", "/var/tmp", D, NULL };
     for (int i = 0; sc[i]; i++) if (dir_writable(sc[i])) { scratch = sc[i]; break; }
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
-    LOG = fopen(LOGP, "w"); if (!LOG) LOG = stderr;
 
-    time_t t = time(NULL);
-    fprintf(LOG, "==== OpenPin4K VPX harness v4 (backend probe) ====\n");
-    fprintf(LOG, "time: %s/proc/self/exe dir=%s  cwd=%s\n", ctime(&t), D, cwd);
+    /* Truncate/start the log, then mirror immediately. */
+    { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v5 (backend probe, eager log) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+    sync_log_to_usb();
 
-    /* RUNDIR = wherever the full bundle actually is. cwd worked last time. */
+    signal(SIGTERM, on_term);
+    signal(SIGINT,  on_term);
+    signal(SIGHUP,  on_term);
+
+    /* RUNDIR = where the full bundle is (cwd worked in v3). */
     char RUN[PATH_MAX] = "";
     if (access("VPinballX_BGFX", F_OK) == 0) strncpy(RUN, cwd, sizeof RUN - 1);
     else {
@@ -127,18 +135,13 @@ int main(int argc, char **argv)
             fclose(m);
         }
     }
-    if (!RUN[0]) { fprintf(LOG, "FATAL: could not locate VPinballX_BGFX bundle.\n"); if (LOG!=stderr) fclose(LOG); distribute_log(); return 1; }
-    fprintf(LOG, "RUNDIR = %s\n", RUN);
+    if (!RUN[0]) { logln("FATAL: could not locate VPinballX_BGFX bundle."); return 1; }
+    logln("RUNDIR = %s", RUN);
 
-    /* HOME + the VPinballX.ini path VPX loads from. */
     char home[PATH_MAX]; snprintf(home, sizeof home, "%s/op-home", scratch);
-    char inidir[PATH_MAX]; snprintf(inidir, sizeof inidir, "%s/.local/share/VPinballX/10.8", home);
-    {
-        char p[PATH_MAX]; const char *parts[] = { ".local", ".local/share", ".local/share/VPinballX", ".local/share/VPinballX/10.8", NULL };
-        mkdir(home, 0755);
-        for (int i = 0; parts[i]; i++) { snprintf(p, sizeof p, "%s/%s", home, parts[i]); mkdir(p, 0755); }
-    }
-    char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/VPinballX.ini", inidir);
+    { const char *parts[] = { "", ".local", ".local/share", ".local/share/VPinballX", ".local/share/VPinballX/10.8", NULL };
+      char p[PATH_MAX]; for (int i = 0; parts[i]; i++) { snprintf(p, sizeof p, "%s/%s", home, parts[i]); mkdir(p, 0755); } }
+    char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
 
     setenv("HOME", home, 1);
     setenv("LD_LIBRARY_PATH", RUN, 1);
@@ -149,8 +152,7 @@ int main(int argc, char **argv)
 
     for (int b = 0; backends[b] && !success; b++) {
         write_ini(inipath, backends[b]);
-        FILE *af = fopen(LOGP, "a");
-        if (af) { fprintf(af, "\n================= TRYING BACKEND: %s =================\n", backends[b]); fclose(af); }
+        logln("\n================= TRYING BACKEND: %s =================", backends[b]);
 
         pid_t pid = fork();
         if (pid == 0) {
@@ -163,25 +165,25 @@ int main(int argc, char **argv)
         }
 
         int status = 0, exited = 0, secs = 0;
-        for (; secs < PROBE_SECONDS; secs++) { if (waitpid(pid, &status, WNOHANG) == pid) { exited = 1; break; } sleep(1); }
+        for (; secs < PROBE_SECONDS; secs++) {
+            if (waitpid(pid, &status, WNOHANG) == pid) { exited = 1; break; }
+            sleep(1);
+            sync_log_to_usb();   /* keep mirroring VPX's own output as it appears */
+        }
 
-        af = fopen(LOGP, "a");
         if (exited) {
-            if (af) fprintf(af, "\n[harness] backend %s FAILED/exited after ~%ds (code %d) -> trying next\n",
-                            backends[b], secs, WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status));
-            if (af) fclose(af);
+            logln("[harness] backend %s FAILED/exited after ~%ds (code %d) -> next",
+                  backends[b], secs, WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status));
         } else {
             success = 1;
-            if (af) { fprintf(af, "\n[harness] backend %s SURVIVED %ds -> RENDERING. Leaving it up ~%ds so you can see it.\n",
-                              backends[b], PROBE_SECONDS, SHOWCASE_SECONDS); fclose(af); }
-            sleep(SHOWCASE_SECONDS);
+            logln("[harness] backend %s SURVIVED %ds -> RENDERING. Keeping it up ~%ds.", backends[b], PROBE_SECONDS, SHOWCASE_SECONDS);
+            for (int s = 0; s < SHOWCASE_SECONDS; s++) { if (waitpid(pid, &status, WNOHANG) == pid) break; sleep(1); }
             kill(pid, SIGTERM); sleep(2); kill(pid, SIGKILL); waitpid(pid, &status, 0);
-            af = fopen(LOGP, "a");
-            if (af) { fprintf(af, "\n[harness] *** WORKING BACKEND: %s *** (closed after showcase)\n", backends[b]); fclose(af); }
+            logln("[harness] *** WORKING BACKEND: %s ***", backends[b]);
         }
     }
 
-    if (!success) { FILE *af = fopen(LOGP, "a"); if (af) { fprintf(af, "\n[harness] No backend initialized BGFX. Need a GLES-enabled BGFX build (see notes).\n"); fclose(af); } }
-    distribute_log();
+    if (!success) logln("[harness] No backend initialized BGFX -> likely need a GLES-enabled BGFX build.");
+    sync_log_to_usb();
     return 0;
 }
