@@ -57,6 +57,17 @@ jobs:
             libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
             libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libgpiod-dev
 
+      - name: Install GCC 13 (VPX needs C++20 <format>; 22.04 default gcc-11 lacks it)
+        # We stay on 22.04 (glibc 2.35) for cabinet compat -- glibc can't be bundled --
+        # but pull a newer compiler from the official Ubuntu toolchain PPA just for <format>.
+        # The matching libstdc++ is bundled into the app folder later, so its version
+        # doesn't need to exist on the cabinet.
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+          gcc-13 --version | head -1
+
       - name: Compute external-deps cache key
         id: exthash
         working-directory: vpinball
@@ -76,7 +87,10 @@ jobs:
 
       - name: Configure (RK3588 / BGFX)
         working-directory: vpinball
-        run: cmake -DRENDERER=BGFX -DPLATFORM=linux -DARCH=aarch64 -DBUILD_RK3588=ON -DCMAKE_BUILD_TYPE=Release -B build
+        run: |
+          cmake -DRENDERER=BGFX -DPLATFORM=linux -DARCH=aarch64 -DBUILD_RK3588=ON \
+            -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=Release -B build
 
       - name: Compile VPinballX_BGFX
         working-directory: vpinball
@@ -90,8 +104,11 @@ jobs:
             echo '```'
             file VPinballX_BGFX
             echo
-            echo "Highest GLIBC symbol version required (cabinet confirmed >= 2.31):"
+            echo "Highest GLIBC symbol required (cabinet confirmed >= 2.31; NOT bundled -- keep low):"
             objdump -T VPinballX_BGFX 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
+            echo
+            echo "Highest GLIBCXX/CXXABI symbol required (libstdc++ IS bundled -- version is safe):"
+            objdump -T VPinballX_BGFX 2>/dev/null | grep -oE '(GLIBCXX|CXXABI)_[0-9.]+' | sort -V | uniq | tail -3
             echo
             echo "Shared libraries the binary expects:"
             ldd VPinballX_BGFX 2>/dev/null || true
@@ -108,6 +125,10 @@ jobs:
           OUT=external/vpx
           mkdir -p "$OUT"
           cp "$B/VPinballX_BGFX" "$OUT/"
+          # Bundle the C++ runtime (gcc-13's libstdc++ + libgcc) so the cabinet's
+          # (older) system copy is bypassed -- LD_LIBRARY_PATH=. picks ours up.
+          cp -L "$(g++-13 -print-file-name=libstdc++.so.6)" "$OUT/" 2>/dev/null || true
+          cp -L "$(g++-13 -print-file-name=libgcc_s.so.1)"  "$OUT/" 2>/dev/null || true
           # Bundle any shared libs / plugins / assets / scripts the runtime needs,
           # co-located so the wrapper's LD_LIBRARY_PATH=. and cwd find them.
           cp -a "$B"/*.so "$B"/*.so.*   "$OUT/" 2>/dev/null || true
