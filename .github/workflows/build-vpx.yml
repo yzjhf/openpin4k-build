@@ -1,0 +1,130 @@
+name: build-vpx
+
+# Compiles VPX Standalone (vpinball/vpinball) for the AtGames Legends Pinball 4K
+# (Rockchip RK3588 / aarch64) on a FREE GitHub-hosted ARM runner, then packages it
+# as an "External Application" bundle (external/vpx/) ready to drop on a USB stick.
+#
+# This repo is PUBLIC only so the ARM runner is free and so we satisfy VPX's GPL
+# "publish your build" obligation. It contains NO tables, NO personal data, and
+# nothing private -- just open-source build glue. See README.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  # Upstream VPX. Pinned to a tagged build for reproducibility -- bump deliberately.
+  VPX_REPO: vpinball/vpinball
+  VPX_REF: v10.8.1-3788-2151290
+
+jobs:
+  build:
+    name: VPinballX_BGFX (rk3588 / aarch64)
+    # 22.04 (glibc 2.35) chosen over 24.04 (glibc 2.39) to maximise the chance the
+    # binary runs on the cabinet: Phase 0 only proved cabinet glibc >= 2.31, and a
+    # cabinet round-trip is our scarcest resource. gcc-11 here still compiles VPX.
+    # If this fails to COMPILE -> bump to ubuntu-24.04-arm (CI-only, free to retry).
+    # If the cabinet rejects it on GLIBC -> drop lower (older container / static).
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Checkout build tooling (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: Checkout vpinball (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.VPX_REPO }}
+          ref: ${{ env.VPX_REF }}
+          path: vpinball
+
+      - name: Install build dependencies
+        # Same list vpinball's own CI uses for its linux-aarch64 SBC build.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake nasm bison zlib1g-dev libdrm-dev libgbm-dev \
+            libglu1-mesa-dev libegl-dev libgl1-mesa-dev libwayland-dev \
+            libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libgpiod-dev
+
+      - name: Compute external-deps cache key
+        id: exthash
+        working-directory: vpinball
+        run: echo "hash=$(cat platforms/config.sh platforms/linux-aarch64/external.sh | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore external-deps cache
+        id: extcache
+        uses: actions/cache@v4
+        with:
+          path: vpinball/external
+          key: vpx-ext-aarch64-${{ env.VPX_REF }}-${{ steps.exthash.outputs.hash }}
+
+      - name: Build external dependencies (SDL3 etc. -- slow, cached)
+        if: steps.extcache.outputs.cache-hit != 'true'
+        working-directory: vpinball
+        run: BUILD_TYPE=Release ./platforms/linux-aarch64/external.sh
+
+      - name: Configure (RK3588 / BGFX)
+        working-directory: vpinball
+        run: cmake -DRENDERER=BGFX -DPLATFORM=linux -DARCH=aarch64 -DBUILD_RK3588=ON -DCMAKE_BUILD_TYPE=Release -B build
+
+      - name: Compile VPinballX_BGFX
+        working-directory: vpinball
+        run: cmake --build build -- -j"$(nproc)"
+
+      - name: Report binary requirements (glibc etc.)
+        working-directory: vpinball/build
+        run: |
+          {
+            echo "## VPinballX_BGFX build report"
+            echo '```'
+            file VPinballX_BGFX
+            echo
+            echo "Highest GLIBC symbol version required (cabinet confirmed >= 2.31):"
+            objdump -T VPinballX_BGFX 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
+            echo
+            echo "Shared libraries the binary expects:"
+            ldd VPinballX_BGFX 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build launch wrapper (-> vpx.elf)
+        run: cc -O2 -o tooling/packaging/vpx.elf tooling/packaging/wrapper.c
+
+      - name: Assemble External App (external/vpx)
+        run: |
+          set -e
+          B=vpinball/build
+          OUT=external/vpx
+          mkdir -p "$OUT"
+          cp "$B/VPinballX_BGFX" "$OUT/"
+          # Bundle any shared libs / plugins / assets / scripts the runtime needs,
+          # co-located so the wrapper's LD_LIBRARY_PATH=. and cwd find them.
+          cp -a "$B"/*.so "$B"/*.so.*   "$OUT/" 2>/dev/null || true
+          cp -r "$B/assets"             "$OUT/" 2>/dev/null || true
+          cp -r "$B/plugins"            "$OUT/" 2>/dev/null || true
+          cp -r "$B/scripts"            "$OUT/" 2>/dev/null || true
+          # Example table to auto-load on the first cabinet test.
+          cp vpinball/src/assets/exampleTable.vpx "$OUT/"
+          # Our launch wrapper + External Applications menu metadata.
+          cp tooling/packaging/vpx.elf            "$OUT/vpx.elf"
+          cp tooling/packaging/vpx.xml            "$OUT/vpx.xml"
+          cp tooling/packaging/README-ONDEVICE.txt "$OUT/README.txt"
+          chmod +x "$OUT/vpx.elf" "$OUT/VPinballX_BGFX"
+          # Placeholder boxart (reuse the SDK demo art, as disptest did).
+          git clone --depth 1 -q https://github.com/wagnerstechtalk/ExternalApplication_SDK.git sdk || true
+          cp sdk/media/sdl2-example/USB/sdl2-example.png "$OUT/vpx.png" 2>/dev/null || true
+          echo "==== external/vpx tree ===="
+          ls -laR "$OUT" | head -120
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpin4k-vpx-external-app
+          path: external
+          if-no-files-found: error
