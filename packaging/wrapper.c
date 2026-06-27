@@ -103,7 +103,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v6 (GL/OpenGL ES) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v7 (GL/ES + cabinet settings) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -134,10 +134,23 @@ int main(int argc, char **argv)
     { char cmd[PATH_MAX + 32]; snprintf(cmd, sizeof cmd, "rm -rf '%s/cache'", RUN);
       int rc = system(cmd); logln("[harness] cleared stale texture cache (rc=%d)", rc); }
 
-    char home[PATH_MAX]; snprintf(home, sizeof home, "%s/op-home", scratch); mkdir(home, 0755);
+    char home[PATH_MAX]; snprintf(home, sizeof home, "%s/op-home", scratch);
+    { const char *parts[] = { "", ".local", ".local/share", ".local/share/VPinballX", ".local/share/VPinballX/10.8", NULL };
+      char p[PATH_MAX]; for (int i = 0; parts[i]; i++) { snprintf(p, sizeof p, "%s/%s", home, parts[i]); mkdir(p, 0755); } }
     setenv("HOME", home, 1);
     setenv("LD_LIBRARY_PATH", RUN, 1);
     setenv("SDL_VIDEODRIVER", "kmsdrm", 0);
+
+    /* Pre-seed VPinballX.ini with cabinet settings (VPX reads this path -- proven):
+     *   SyncMode=0  : No Sync. Default 3 (Frame Pacing) fails on the GL/ES renderer
+     *                 ("Failed to create the synchronization device") -> frozen frame.
+     *   ShowFPS=1   : on-screen FPS counter, to prove the frame loop is actually running.
+     *   BGSet=1     : Cabinet view (drops the desktop grey frame, fills the playfield).
+     *   ViewCabRotation=90 : rotate upright on the portrait playfield (flip to 270 if wrong). */
+    { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
+      FILE *ini = fopen(inipath, "w");
+      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 90\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=90"); }
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
