@@ -92,14 +92,19 @@ jobs:
         working-directory: vpinball
         run: BUILD_TYPE=Release ./platforms/linux-aarch64/external.sh
 
-      - name: Configure (RK3588 / BGFX)
+      # The BGFX renderer was a dead end on the cabinet: its compiled backends are
+      # desktop-OpenGL + Vulkan, but the Mali GPU (no X11, KMSDRM only) needs
+      # OpenGL ES -- all 3 BGFX backends failed bgfx::init() on-device. VPX's own
+      # GL renderer compiles to OpenGL ES (__OPENGLES__) on aarch64 and gets its
+      # GLES context via SDL3/KMSDRM, which is the Mali-native path. So build that.
+      - name: Configure (RK3588 / GL = OpenGL ES on aarch64)
         working-directory: vpinball
         run: |
-          cmake -DRENDERER=BGFX -DPLATFORM=linux -DARCH=aarch64 -DBUILD_RK3588=ON \
+          cmake -DRENDERER=GL -DPLATFORM=linux -DARCH=aarch64 -DBUILD_RK3588=ON \
             -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_BUILD_TYPE=Release -B build
 
-      - name: Compile VPinballX_BGFX
+      - name: Compile VPinballX_GL
         working-directory: vpinball
         run: cmake --build build -- -j"$(nproc)"
 
@@ -107,18 +112,19 @@ jobs:
         working-directory: vpinball/build
         run: |
           {
-            echo "## VPinballX_BGFX build report"
+            echo "## VPinballX_GL build report"
             echo '```'
-            file VPinballX_BGFX
+            file VPinballX_GL
             echo
             echo "Highest GLIBC symbol required (cabinet confirmed >= 2.31; NOT bundled -- keep low):"
-            objdump -T VPinballX_BGFX 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
+            objdump -T VPinballX_GL 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
             echo
             echo "Highest GLIBCXX/CXXABI symbol required (libstdc++ IS bundled -- version is safe):"
-            objdump -T VPinballX_BGFX 2>/dev/null | grep -oE '(GLIBCXX|CXXABI)_[0-9.]+' | sort -V | uniq | tail -3
+            objdump -T VPinballX_GL 2>/dev/null | grep -oE '(GLIBCXX|CXXABI)_[0-9.]+' | sort -V | uniq | tail -3
             echo
             echo "Shared libraries the binary expects:"
-            ldd VPinballX_BGFX 2>/dev/null || true
+            ldd VPinballX_GL 2>/dev/null || true
+            echo "shaders dir:"; ls -d shaders-* 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -131,7 +137,9 @@ jobs:
           B=vpinball/build
           OUT=external/vpx
           mkdir -p "$OUT"
-          cp "$B/VPinballX_BGFX" "$OUT/"
+          cp "$B/VPinballX_GL" "$OUT/"
+          # GL renderer ships GLSL shaders in a shaders-<version> dir next to it.
+          cp -r "$B"/shaders-*          "$OUT/" 2>/dev/null || true
           # Bundle the C++ runtime (gcc-13's libstdc++ + libgcc) so the cabinet's
           # (older) system copy is bypassed -- LD_LIBRARY_PATH=. picks ours up.
           cp -L "$(g++-13 -print-file-name=libstdc++.so.6)" "$OUT/" 2>/dev/null || true
@@ -148,7 +156,7 @@ jobs:
           cp tooling/packaging/vpx.elf            "$OUT/vpx.elf"
           cp tooling/packaging/vpx.xml            "$OUT/vpx.xml"
           cp tooling/packaging/README-ONDEVICE.txt "$OUT/README.txt"
-          chmod +x "$OUT/vpx.elf" "$OUT/VPinballX_BGFX"
+          chmod +x "$OUT/vpx.elf" "$OUT/VPinballX_GL"
           # Placeholder boxart (reuse the SDK demo art, as disptest did).
           git clone --depth 1 -q https://github.com/wagnerstechtalk/ExternalApplication_SDK.git sdk || true
           cp sdk/media/sdl2-example/USB/sdl2-example.png "$OUT/vpx.png" 2>/dev/null || true
