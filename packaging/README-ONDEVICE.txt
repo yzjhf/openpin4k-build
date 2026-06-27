@@ -9,6 +9,9 @@ WHAT IT SHOULD DO
   Launch it from the cabinet's "External Applications" menu (entry name: vpx).
   It tries to open a built-in example table on the playfield.
 
+  NOTE (diagnostic build): it auto-closes after ~60 seconds even if it works --
+  that is expected. Then unplug the USB and look for the log file below.
+
 IF SOMETHING GOES WRONG (this is the important part)
   The launcher writes a log file next to this README every time it runs:
 
