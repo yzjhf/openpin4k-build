@@ -28,7 +28,7 @@
 #include <sys/wait.h>
 
 #define BIN "VPinballX_GL"
-#define SHOWCASE_SECONDS 50   /* keep a working table on screen this long */
+#define SHOWCASE_SECONDS 120  /* keep a working table on screen this long (play window) */
 
 static char LOGP[PATH_MAX];
 
@@ -127,6 +127,12 @@ int main(int argc, char **argv)
     }
     if (!RUN[0]) { logln("FATAL: could not locate " BIN " bundle."); return 1; }
     logln("RUNDIR = %s", RUN);
+
+    /* VPX writes a per-table texture cache next to the .vpx (on the USB). A cache
+     * left half-written when we close the app makes the NEXT run hang at "Loading
+     * Textures". Wipe it before every launch so each run is a clean first run. */
+    { char cmd[PATH_MAX + 32]; snprintf(cmd, sizeof cmd, "rm -rf '%s/cache'", RUN);
+      int rc = system(cmd); logln("[harness] cleared stale texture cache (rc=%d)", rc); }
 
     char home[PATH_MAX]; snprintf(home, sizeof home, "%s/op-home", scratch); mkdir(home, 0755);
     setenv("HOME", home, 1);
