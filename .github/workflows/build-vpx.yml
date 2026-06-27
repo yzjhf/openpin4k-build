@@ -77,8 +77,15 @@ jobs:
         id: extcache
         uses: actions/cache@v4
         with:
-          path: vpinball/external
-          key: vpx-ext-aarch64-${{ env.VPX_REF }}-${{ steps.exthash.outputs.hash }}
+          # external.sh produces BOTH the build scratch (external/) AND the
+          # headers/libs CMake actually consumes (third-party/). Caching only
+          # external/ meant a cache-hit skipped external.sh and left third-party/
+          # missing -> "Third-party dependencies not found". Cache both, and the
+          # -v2 key busts the old incomplete cache.
+          path: |
+            vpinball/external
+            vpinball/third-party
+          key: vpx-ext-aarch64-v2-${{ env.VPX_REF }}-${{ steps.exthash.outputs.hash }}
 
       - name: Build external dependencies (SDL3 etc. -- slow, cached)
         if: steps.extcache.outputs.cache-hit != 'true'
