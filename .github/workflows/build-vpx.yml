@@ -131,6 +131,23 @@ jobs:
       - name: Build launch wrapper (-> vpx.elf)
         run: cc -O2 -o tooling/packaging/vpx.elf tooling/packaging/wrapper.c
 
+      - name: Build joystick discovery logger (-> jstest.elf)
+        # Tiny SDL3 program that logs each controller button/axis/hat with the EXACT
+        # id VPX uses, so we can map the cabinet's physical buttons without guessing.
+        # Auto-discover the in-tree SDL3 headers + built lib (layout can shift between
+        # external/ and third-party/), so a path change doesn't silently break this.
+        run: |
+          set -e
+          SDLH=$(find vpinball/third-party vpinball/external vpinball/build -path '*SDL3/SDL.h' 2>/dev/null | head -1)
+          SDLLIB=$(find vpinball/build vpinball/third-party vpinball/external -name 'libSDL3.so*' 2>/dev/null | head -1)
+          test -n "$SDLH"   || { echo "SDL3/SDL.h not found"; exit 1; }
+          test -n "$SDLLIB" || { echo "libSDL3.so not found"; exit 1; }
+          INCBASE=$(dirname "$(dirname "$SDLH")")   # parent of .../SDL3 -> use <SDL3/SDL.h>
+          LIBDIR=$(dirname "$SDLLIB")
+          echo "SDL header base = $INCBASE ; SDL lib = $SDLLIB"
+          cc -O2 -I"$INCBASE" -o tooling/packaging/jstest.elf tooling/packaging/jstest.c -L"$LIBDIR" -lSDL3
+          file tooling/packaging/jstest.elf
+
       - name: Assemble External App (external/vpx)
         run: |
           set -e
@@ -152,11 +169,12 @@ jobs:
           cp -r "$B/scripts"            "$OUT/" 2>/dev/null || true
           # Example table to auto-load on the first cabinet test.
           cp vpinball/src/assets/exampleTable.vpx "$OUT/"
-          # Our launch wrapper + External Applications menu metadata.
+          # Our launch wrapper + joystick discovery logger + External Apps metadata.
           cp tooling/packaging/vpx.elf            "$OUT/vpx.elf"
+          cp tooling/packaging/jstest.elf         "$OUT/jstest.elf"
           cp tooling/packaging/vpx.xml            "$OUT/vpx.xml"
           cp tooling/packaging/README-ONDEVICE.txt "$OUT/README.txt"
-          chmod +x "$OUT/vpx.elf" "$OUT/VPinballX_GL"
+          chmod +x "$OUT/vpx.elf" "$OUT/jstest.elf" "$OUT/VPinballX_GL"
           # Placeholder boxart (reuse the SDK demo art, as disptest did).
           git clone --depth 1 -q https://github.com/wagnerstechtalk/ExternalApplication_SDK.git sdk || true
           cp sdk/media/sdl2-example/USB/sdl2-example.png "$OUT/vpx.png" 2>/dev/null || true

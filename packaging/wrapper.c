@@ -28,7 +28,11 @@
 #include <sys/wait.h>
 
 #define BIN "VPinballX_GL"
-#define SHOWCASE_SECONDS 120  /* keep a working table on screen this long (play window) */
+#define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
+#define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
+#define SHOWCASE_SECONDS 80     /* keep a working table on screen this long (play window).
+                                 * Kept + logger time well under the ~127s the cabinet
+                                 * launcher has tolerated, so we aren't killed mid-run. */
 
 static char LOGP[PATH_MAX];
 
@@ -103,7 +107,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v7 (GL/ES + cabinet settings) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v8 (GL/ES + rotation 180 + joystick discovery) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -146,14 +150,51 @@ int main(int argc, char **argv)
      *                 ("Failed to create the synchronization device") -> frozen frame.
      *   ShowFPS=1   : on-screen FPS counter, to prove the frame loop is actually running.
      *   BGSet=1     : Cabinet view (drops the desktop grey frame, fills the playfield).
-     *   ViewCabRotation=270 : rotate upright on the portrait playfield. Test #11 used 90
-     *                 and it was still 90deg off (needs CW); 270 = canonical portrait
-     *                 cabinet value. If still wrong, the remaining candidates are 0 / 180.
+     *   ViewCabRotation=180 : rotate upright on the portrait playfield. BRACKETED on the
+     *                 cabinet: #11 used 90 -> off, needed +90 CW; #12 used 270 -> off,
+     *                 needed 90 CCW ("over-rotated"). Correct value is between them = 180
+     *                 (90+90CW = 180; 270-90 = 180). 0 was the only other candidate, ruled
+     *                 out by "over-rotated past the right value going 90->270".
      *   ShowFPS=1 stays on to confirm the loop runs (test #11: 20fps, loop alive). */
     { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
       FILE *ini = fopen(inipath, "w");
-      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 270\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=270"); }
+      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 180\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=180"); }
+
+    /* ---- INPUT DISCOVERY: run the joystick logger BEFORE VPX ----
+     * VPX detects the cabinet pad "ATG game console #1" but its auto-layout doesn't
+     * match the physical buttons, and the pad has 0 axes / 16 buttons / 1 hat, so we
+     * must learn which button INDEX is each control. jstest.elf prints each press's
+     * exact id (the value that goes after the ';' in a Mapping line). The operator
+     * presses the controls in a known order during its ~30s window; we read the
+     * indices from vpx-log.txt. No video here -- the screen may stay blank; that's
+     * expected, the operator presses per the written guide. */
+    {
+        char jp[PATH_MAX]; snprintf(jp, sizeof jp, "%s/" JSTEST, RUN);
+        if (access(jp, F_OK) == 0) {
+            logln("\n================= JOYSTICK DISCOVERY (%s) =================", JSTEST);
+            pid_t jpid = fork();
+            if (jpid == 0) {
+                chdir(RUN);
+                int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
+                if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+                execl("./" JSTEST, JSTEST, (char *)NULL);
+                fprintf(stderr, "\n[harness] exec of %s failed: %s\n", JSTEST, strerror(errno));
+                _exit(127);
+            }
+            int jst = 0, jdone = 0;
+            for (int s = 0; s < DISCOVER_SECONDS; s++) {
+                if (waitpid(jpid, &jst, WNOHANG) == jpid) { jdone = 1;
+                    logln("[harness] %s finished after ~%ds.", JSTEST, s); break; }
+                sleep(1); sync_log_to_usb();
+            }
+            if (!jdone) { logln("[harness] %s still running after %ds -> stopping it.", JSTEST, DISCOVER_SECONDS);
+                kill(jpid, SIGKILL); waitpid(jpid, &jst, 0); }
+            sync_log_to_usb();
+        } else {
+            logln("[harness] %s not present in bundle -> skipping joystick discovery.", JSTEST);
+        }
+    }
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
@@ -180,6 +221,26 @@ int main(int argc, char **argv)
         logln("[harness] %s STILL RUNNING after %ds -> it's rendering. Closing now.", BIN, SHOWCASE_SECONDS);
         kill(pid, SIGTERM); sleep(2); kill(pid, SIGKILL); waitpid(pid, &status, 0);
     }
+
+    /* Copy the VPinballX.ini VPX leaves behind onto the USB. VPX may persist its
+     * (wrong) auto-layout Mapping.* lines + the real device id here, which lets us
+     * cross-check the device UID and see exactly which buttons it guessed. */
+    { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
+      FILE *m = fopen("/proc/mounts", "r");
+      if (m) { char line[2048], dv[256], mp[PATH_MAX], fs[64];
+          while (fgets(line, sizeof line, m)) {
+              if (sscanf(line, "%255s %4095s %63s", dv, mp, fs) != 3) continue;
+              if (strcmp(fs,"vfat")&&strcmp(fs,"exfat")&&strcmp(fs,"msdos")&&strcmp(fs,"fuseblk")&&strcmp(fs,"texfat")) continue;
+              unescape(mp);
+              const char *subs[] = { "external/vpx", "vpx", NULL };
+              for (int i = 0; subs[i]; i++) { char chk[PATH_MAX], dst[PATH_MAX];
+                  snprintf(chk, sizeof chk, "%s/%s/vpx.elf", mp, subs[i]);
+                  if (access(chk, F_OK) == 0) { snprintf(dst, sizeof dst, "%s/%s/vpx-ini-after.txt", mp, subs[i]); copy_file(inipath, dst); } }
+          }
+          fclose(m);
+      }
+      logln("[harness] copied VPX's VPinballX.ini to USB as vpx-ini-after.txt"); }
+
     sync_log_to_usb();
     return 0;
 }
