@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v10 (rotation 180 + full controls mapped = PLAYABLE) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v11 (playable + AAFactor=0.5 perf: render 1080p->4K) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -175,7 +175,14 @@ int main(int argc, char **argv)
      *   genuinely PLAYABLE build: start a game (14) -> launch (9) -> flip (13/5). */
     { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
       FILE *ini = fopen(inipath, "w");
-      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n"
+      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n"
+                       /* AAFactor scales the OFFSCREEN render buffer: renderW/H * AAFactor
+                        * (Renderer.cpp ~L135). Default 1.0 = render full 4K (3840x2160)
+                        * every frame -> ~45ms present on Mali = the 20fps bottleneck (test
+                        * #11 profiler: Flip 90% of frame). 0.5 = render 1920x1080 then
+                        * upscale to the 4K window -> ~1/4 the fill work. Range is 0.5..2.0
+                        * (Settings_properties.inl), so 0.5 is the most perf this lever gives. */
+                       "AAFactor = 0.5\n\n"
                        "[TableOverride]\nViewCabRotation = 180\n\n"
                        "[Input]\n"
                        "Device." ATGDEV ".NoAutoLayout = 1\n"
@@ -184,7 +191,7 @@ int main(int argc, char **argv)
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
                        "Mapping.LeftNudge = " ATGDEV ";7\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 Lnudge=7 on " ATGDEV " (NoAutoLayout)"); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 (render 1080p->4K for perf) + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge=7 on " ATGDEV " (NoAutoLayout)"); }
 
     /* Input discovery (jstest) is DONE -- all core controls are mapped above, so we go
      * straight to VPX now (no blank-screen logger phase). jstest.elf stays in the bundle
