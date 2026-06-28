@@ -30,9 +30,13 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
-#define SHOWCASE_SECONDS 80     /* keep a working table on screen this long (play window).
+#define SHOWCASE_SECONDS 70     /* keep a working table on screen this long (play window).
                                  * Kept + logger time well under the ~127s the cabinet
                                  * launcher has tolerated, so we aren't killed mid-run. */
+
+/* Cabinet controls device, taken from VPX's OWN log ("VPX UID: ..."), NOT from the
+ * jstest logger (which computed the index as _0; VPX uses _1 -- always trust VPX's). */
+#define ATGDEV "SDLJoy_190060e2380800001988000011010000_1"
 
 static char LOGP[PATH_MAX];
 
@@ -107,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v8 (GL/ES + rotation 180 + joystick discovery) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v9 (rotation 180 + flippers mapped + discovery) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -155,11 +159,26 @@ int main(int argc, char **argv)
      *                 needed 90 CCW ("over-rotated"). Correct value is between them = 180
      *                 (90+90CW = 180; 270-90 = 180). 0 was the only other candidate, ruled
      *                 out by "over-rotated past the right value going 90->270".
-     *   ShowFPS=1 stays on to confirm the loop runs (test #11: 20fps, loop alive). */
+     *   ShowFPS=1 stays on to confirm the loop runs (test #11: 20fps, loop alive).
+     *
+     * [Input]: map the two flippers we captured with confidence in test #13 (button 13
+     *   = LEFT flipper, 5 = RIGHT, pressed 1st/2nd in order). NoAutoLayout=1 stops VPX
+     *   layering its (wrong) auto-guesses on top -- confirmed in InputManager.cpp:
+     *   ProcessInput only calls ApplyDefaultDeviceMapping when NoAutoLayout is false;
+     *   explicit Mapping.<id> is loaded regardless (InputAction::LoadMapping). Mapping
+     *   string format = "<deviceUID>;<buttonId>" (InputAction.cpp). Button 9 and the
+     *   nudges/start are NOT mapped yet -- jstest re-captures them this run (count
+     *   protocol) so we map them next without guessing. Flippers move on-screen when
+     *   pressed even with no ball, so this is a complete, observable flipper test. */
     { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
       FILE *ini = fopen(inipath, "w");
-      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 180\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=180"); }
+      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n"
+                       "[TableOverride]\nViewCabRotation = 180\n\n"
+                       "[Input]\n"
+                       "Device." ATGDEV ".NoAutoLayout = 1\n"
+                       "Mapping.LeftFlipper = " ATGDEV ";13\n"
+                       "Mapping.RightFlipper = " ATGDEV ";5\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: rotation 180 + flippers L=13 R=5 on " ATGDEV " (NoAutoLayout)"); }
 
     /* ---- INPUT DISCOVERY: run the joystick logger BEFORE VPX ----
      * VPX detects the cabinet pad "ATG game console #1" but its auto-layout doesn't
