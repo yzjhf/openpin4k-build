@@ -146,11 +146,14 @@ int main(int argc, char **argv)
      *                 ("Failed to create the synchronization device") -> frozen frame.
      *   ShowFPS=1   : on-screen FPS counter, to prove the frame loop is actually running.
      *   BGSet=1     : Cabinet view (drops the desktop grey frame, fills the playfield).
-     *   ViewCabRotation=90 : rotate upright on the portrait playfield (flip to 270 if wrong). */
+     *   ViewCabRotation=270 : rotate upright on the portrait playfield. Test #11 used 90
+     *                 and it was still 90deg off (needs CW); 270 = canonical portrait
+     *                 cabinet value. If still wrong, the remaining candidates are 0 / 180.
+     *   ShowFPS=1 stays on to confirm the loop runs (test #11: 20fps, loop alive). */
     { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
       FILE *ini = fopen(inipath, "w");
-      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 90\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=90"); }
+      if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n[TableOverride]\nViewCabRotation = 270\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: SyncMode=0 ShowFPS=1 BGSet=1(Cabinet) ViewCabRotation=270"); }
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
