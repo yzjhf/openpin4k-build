@@ -30,9 +30,8 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
-#define SHOWCASE_SECONDS 600    /* generous "just play" window now that Exit (button 12) lets
-                                 * the player quit cleanly on demand. If the cabinet launcher
-                                 * kills us before this, fine -- they were already playing. */
+/* SHOWCASE_SECONDS retired in the ship build (v17): no auto-close timeout -- VPX runs
+ * until the player presses Exit (button 12). Kept as a no-op note for history. */
 
 /* Cabinet controls device, taken from VPX's OWN log ("VPX UID: ..."), NOT from the
  * jstest logger (which computed the index as _0; VPX uses _1 -- always trust VPX's). */
@@ -111,7 +110,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v16 (full controls; left-nudge dual-mapped on 14) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v17 (SHIP: full controls, no auto-close, Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -228,19 +227,18 @@ int main(int argc, char **argv)
         _exit(127);
     }
 
-    int status = 0, exited = 0;
-    for (int s = 0; s < SHOWCASE_SECONDS; s++) {
-        if (waitpid(pid, &status, WNOHANG) == pid) { exited = 1;
-            logln("[harness] %s exited after ~%ds (code %d).", BIN, s,
+    /* SHIP behavior: NO auto-close timeout. Run until VPX exits on its own -- the player
+     * quits with the Exit button (12 -> ExitGame -> clean close, confirmed test #20). We
+     * just wait, syncing the log each second so we still get diagnostics if anything dies. */
+    int status = 0;
+    for (;;) {
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            logln("[harness] %s exited (code %d).", BIN,
                   WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status));
             break;
         }
         sleep(1);
         sync_log_to_usb();
-    }
-    if (!exited) {
-        logln("[harness] %s STILL RUNNING after %ds -> it's rendering. Closing now.", BIN, SHOWCASE_SECONDS);
-        kill(pid, SIGTERM); sleep(2); kill(pid, SIGKILL); waitpid(pid, &status, 0);
     }
 
     /* Copy the VPinballX.ini VPX leaves behind onto the USB. VPX may persist its
