@@ -30,9 +30,9 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
-#define SHOWCASE_SECONDS 120    /* play window after the ~30s detector phase (keeps total
-                                 * under the launcher's tolerance). Exit=12 lets them quit
-                                 * sooner; back to 180+ once the detector is removed again. */
+#define SHOWCASE_SECONDS 600    /* generous "just play" window now that Exit (button 12) lets
+                                 * the player quit cleanly on demand. If the cabinet launcher
+                                 * kills us before this, fine -- they were already playing. */
 
 /* Cabinet controls device, taken from VPX's OWN log ("VPX UID: ..."), NOT from the
  * jstest logger (which computed the index as _0; VPX uses _1 -- always trust VPX's). */
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v15 (Exit=12 + isolated left-nudge capture) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v16 (full controls; left-nudge dual-mapped on 14) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -196,52 +196,26 @@ int main(int argc, char **argv)
                        "Mapping.RightFlipper = " ATGDEV ";5\n"
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
-                       /* Button 7 = the WORKING nudge: pressed via the physical RIGHT button it
-                        * nudges the right way for the player. The action name "LeftNudge" is a
-                        * misnomer (the 180deg rotation inverts nudge direction), but the BEHAVIOUR
-                        * is correct -- so LEAVE IT (user confirmed). The other (physical-left)
-                        * nudge button + a menu/Exit button are still unknown -> jstest captures
-                        * them below; the left one will likely map to RightNudge by the same flip. */
+                       /* HARDWARE OVERLAP (user confirmed 100%): the physical LEFT-NUDGE button and
+                        * the START button are two separate buttons but the cabinet sends the SAME
+                        * code (14) for both -> indistinguishable to VPX. So DUAL-MAP 14: it stays
+                        * Start AND also becomes the left nudge. By the 180deg flip (physical-right
+                        * button 7 -> LeftNudge -> nudges right), the physical-LEFT button maps to
+                        * RightNudge so it nudges left. Side effect to test: pressing it to nudge
+                        * also fires Start (may serve a ball / add a player). Easily reverted. */
+                       "Mapping.RightNudge = " ATGDEV ";14\n"
+                       /* Button 7 = the WORKING (right) nudge -- name "LeftNudge" is a misnomer due
+                        * to the 180deg flip, but behaviour is correct, so LEAVE IT (user confirmed). */
                        "Mapping.LeftNudge = " ATGDEV ";7\n"
                        /* ExitGame = button 12 (the MENU button, captured in test #18). On a
                         * STANDALONE build, ExitGame -> SetCloseState(CS_CLOSE_APP) = single
                         * press closes VPX cleanly back to the cabinet menu, no confirm dialog
                         * (InputManager.cpp ~L776; Exitconfirm only affects a long-ESC hold). */
                        "Mapping.ExitGame = " ATGDEV ";12\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge=7 EXIT=12 on " ATGDEV " (NoAutoLayout)"); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 (+RightNudge=14 dual) Lnudge-action=7 EXIT=12 on " ATGDEV " (NoAutoLayout)"); }
 
-    /* ---- INPUT DISCOVERY: isolated LEFT-NUDGE capture ----
-     * Exit (12) is mapped above + playable. The only remaining unknown is whether a
-     * DISTINCT left-nudge button exists (test #18's "left nudge" press came back as
-     * button 14 = the Start button, which is ambiguous). Run jstest first (~30s, screen
-     * blank = normal); the operator presses ONLY the left-nudge button several times so
-     * we read it unambiguously. Table still plays after (test the Exit button then). */
-    {
-        char jp[PATH_MAX]; snprintf(jp, sizeof jp, "%s/" JSTEST, RUN);
-        if (access(jp, F_OK) == 0) {
-            logln("\n================= JOYSTICK DISCOVERY (%s) =================", JSTEST);
-            pid_t jpid = fork();
-            if (jpid == 0) {
-                chdir(RUN);
-                int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
-                if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
-                execl("./" JSTEST, JSTEST, (char *)NULL);
-                fprintf(stderr, "\n[harness] exec of %s failed: %s\n", JSTEST, strerror(errno));
-                _exit(127);
-            }
-            int jst = 0, jdone = 0;
-            for (int s = 0; s < DISCOVER_SECONDS; s++) {
-                if (waitpid(jpid, &jst, WNOHANG) == jpid) { jdone = 1;
-                    logln("[harness] %s finished after ~%ds.", JSTEST, s); break; }
-                sleep(1); sync_log_to_usb();
-            }
-            if (!jdone) { logln("[harness] %s still running after %ds -> stopping it.", JSTEST, DISCOVER_SECONDS);
-                kill(jpid, SIGKILL); waitpid(jpid, &jst, 0); }
-            sync_log_to_usb();
-        } else {
-            logln("[harness] %s not present in bundle -> skipping joystick discovery.", JSTEST);
-        }
-    }
+    /* Detector removed -- full control set is mapped (incl. Exit=12 and the dual-mapped
+     * left nudge on 14). Straight to VPX; jstest.elf stays bundled for any future use. */
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
