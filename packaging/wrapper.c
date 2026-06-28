@@ -196,11 +196,14 @@ int main(int argc, char **argv)
                        "Mapping.RightFlipper = " ATGDEV ";5\n"
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
-                       /* Button 7 is physically the RIGHT nudge (test #15: pressing it nudged;
-                        * user reported it as the working "right nudge"). Left nudge + a menu/
-                        * Exit button are still unknown -> jstest re-runs below to capture them. */
-                       "Mapping.RightNudge = " ATGDEV ";7\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 R-nudge=7 on " ATGDEV " (NoAutoLayout)"); }
+                       /* Button 7 = the WORKING nudge: pressed via the physical RIGHT button it
+                        * nudges the right way for the player. The action name "LeftNudge" is a
+                        * misnomer (the 180deg rotation inverts nudge direction), but the BEHAVIOUR
+                        * is correct -- so LEAVE IT (user confirmed). The other (physical-left)
+                        * nudge button + a menu/Exit button are still unknown -> jstest captures
+                        * them below; the left one will likely map to RightNudge by the same flip. */
+                       "Mapping.LeftNudge = " ATGDEV ";7\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge(working)=7 on " ATGDEV " (NoAutoLayout)"); }
 
     /* ---- INPUT DISCOVERY (re-enabled): capture the last 2 unknown buttons ----
      * Core controls are mapped + playable above. Still missing: the LEFT nudge button
