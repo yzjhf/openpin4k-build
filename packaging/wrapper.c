@@ -30,9 +30,9 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
-#define SHOWCASE_SECONDS 180    /* play window. Controls are mapped now, so give a real
-                                 * game's worth of time. If the cabinet launcher kills us
-                                 * earlier that's fine (they were already playing). */
+#define SHOWCASE_SECONDS 120    /* play window after the ~30s detector phase (keeps total
+                                 * under the launcher's tolerance; logger data syncs eagerly
+                                 * anyway). Back to 180 once the detector is removed again. */
 
 /* Cabinet controls device, taken from VPX's OWN log ("VPX UID: ..."), NOT from the
  * jstest logger (which computed the index as _0; VPX uses _1 -- always trust VPX's). */
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v12 (playable + AAFactor=0.5 + DisableAO perf tune) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v13 (playable + discover left-nudge & menu buttons) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -196,12 +196,43 @@ int main(int argc, char **argv)
                        "Mapping.RightFlipper = " ATGDEV ";5\n"
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
-                       "Mapping.LeftNudge = " ATGDEV ";7\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 (perf) + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge=7 on " ATGDEV " (NoAutoLayout)"); }
+                       /* Button 7 is physically the RIGHT nudge (test #15: pressing it nudged;
+                        * user reported it as the working "right nudge"). Left nudge + a menu/
+                        * Exit button are still unknown -> jstest re-runs below to capture them. */
+                       "Mapping.RightNudge = " ATGDEV ";7\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 R-nudge=7 on " ATGDEV " (NoAutoLayout)"); }
 
-    /* Input discovery (jstest) is DONE -- all core controls are mapped above, so we go
-     * straight to VPX now (no blank-screen logger phase). jstest.elf stays in the bundle
-     * for any future re-capture (e.g. right nudge), just not run here. */
+    /* ---- INPUT DISCOVERY (re-enabled): capture the last 2 unknown buttons ----
+     * Core controls are mapped + playable above. Still missing: the LEFT nudge button
+     * and a MENU/quit button (cabinet Home doesn't exit). Run jstest first (~30s,
+     * screen blank = normal) so the operator presses those two; we read the ids from
+     * the log, then map LeftNudge + ExitGame next build. Table still plays after. */
+    {
+        char jp[PATH_MAX]; snprintf(jp, sizeof jp, "%s/" JSTEST, RUN);
+        if (access(jp, F_OK) == 0) {
+            logln("\n================= JOYSTICK DISCOVERY (%s) =================", JSTEST);
+            pid_t jpid = fork();
+            if (jpid == 0) {
+                chdir(RUN);
+                int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
+                if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+                execl("./" JSTEST, JSTEST, (char *)NULL);
+                fprintf(stderr, "\n[harness] exec of %s failed: %s\n", JSTEST, strerror(errno));
+                _exit(127);
+            }
+            int jst = 0, jdone = 0;
+            for (int s = 0; s < DISCOVER_SECONDS; s++) {
+                if (waitpid(jpid, &jst, WNOHANG) == jpid) { jdone = 1;
+                    logln("[harness] %s finished after ~%ds.", JSTEST, s); break; }
+                sleep(1); sync_log_to_usb();
+            }
+            if (!jdone) { logln("[harness] %s still running after %ds -> stopping it.", JSTEST, DISCOVER_SECONDS);
+                kill(jpid, SIGKILL); waitpid(jpid, &jst, 0); }
+            sync_log_to_usb();
+        } else {
+            logln("[harness] %s not present in bundle -> skipping joystick discovery.", JSTEST);
+        }
+    }
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
