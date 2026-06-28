@@ -26,6 +26,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <dirent.h>
+#include <strings.h>
 
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
@@ -110,7 +112,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v17 (SHIP: full controls, no auto-close, Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v18 (auto-detect real table; full controls; no auto-close; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -216,13 +218,40 @@ int main(int argc, char **argv)
     /* Detector removed -- full control set is mapped (incl. Exit=12 and the dual-mapped
      * left nudge on 14). Straight to VPX; jstest.elf stays bundled for any future use. */
 
-    logln("\n================= LAUNCHING %s =================", BIN);
+    /* TABLE SELECTION (v18): community .vpx tables are NOT redistributable, so they are
+     * NOT baked into our public engine bundle -- the player (CityHands) drops a real .vpx
+     * into the bundle folder on the USB. Scan RUNDIR for any *.vpx and play the FIRST one
+     * that isn't our bundled demo (exampleTable.vpx); if none is present, fall back to the
+     * demo so the engine still does something. This keeps the GPL engine and the (3rd-party)
+     * table cleanly separate -- the same split the table-manager will produce later. We do
+     * NOT yet apply the catalogue's per-table table.ini: the global VPinballX.ini we seed
+     * (rotation 180 + perf + input map, all cabinet-proven) governs every table, so this
+     * first real-table run changes exactly ONE variable -- the table file itself. */
+    char table[PATH_MAX]; strcpy(table, "exampleTable.vpx");
+    { DIR *d = opendir(RUN);
+      if (d) { struct dirent *e;
+          while ((e = readdir(d))) {
+              const char *nm = e->d_name; size_t L = strlen(nm);
+              if (L > 4 && strcasecmp(nm + L - 4, ".vpx") == 0
+                        && strcmp(nm, "exampleTable.vpx") != 0) {
+                  strncpy(table, nm, sizeof table - 1); table[sizeof table - 1] = 0; break;
+              }
+          }
+          closedir(d);
+      }
+    }
+    if (strcmp(table, "exampleTable.vpx") == 0)
+        logln("[harness] no community .vpx found in RUNDIR -> playing bundled demo exampleTable.vpx");
+    else
+        logln("[harness] community table found -> playing '%s'", table);
+
+    logln("\n================= LAUNCHING %s (%s) =================", BIN, table);
     pid_t pid = fork();
     if (pid == 0) {
         chdir(RUN);
         int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
-        execl("./" BIN, BIN, "-play", "exampleTable.vpx", (char *)NULL);
+        execl("./" BIN, BIN, "-play", table, (char *)NULL);
         fprintf(stderr, "\n[harness] exec of %s failed: %s\n", BIN, strerror(errno));
         _exit(127);
     }
