@@ -32,6 +32,8 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
+#define RUN_DISCOVERY 0         /* 1 = run jstest button-logger before the table; 0 = straight to play.
+                                 * Test #24 already confirmed plunger=9; flip to 1 only for new discovery. */
 /* SHOWCASE_SECONDS retired in the ship build (v17): no auto-close timeout -- VPX runs
  * until the player presses Exit (button 12). Kept as a no-op note for history. */
 
@@ -112,7 +114,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v20 (real-table rotation 90 + jstest re-discovery for plunger/coin; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v21 (real-table rotation 90 + Credit on plunger/front buttons for EM start; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -228,6 +230,16 @@ int main(int argc, char **argv)
                        "Mapping.RightFlipper = " ATGDEV ";5\n"
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
+                       /* CREDIT (v21): real EM tables (Fast Draw) boot in ATTRACT mode with 0 credits --
+                        * Start does nothing until a credit is inserted, so no ball serves and the
+                        * flippers stay UNPOWERED. That is exactly tests #23/#24: table renders, nudges +
+                        * exit work (VPX core), but no ball and flippers/plunger dead (table mechanics).
+                        * No physical coin button exists on this cabinet (jstest #24 found none), so map
+                        * Credit1 to the PLUNGER (9 -- a no-op in attract since there's no ball to launch)
+                        * plus a few spare front-panel buttons (0/1/3/4) as backup. Sequence becomes: tap
+                        * the plunger a few times to add credits -> Start -> plunger to launch -> play.
+                        * (Credit1 default key is '5'/coin, InputManager.cpp L744; '|' = OR.) */
+                       "Mapping.Credit1 = " ATGDEV ";9|" ATGDEV ";0|" ATGDEV ";1|" ATGDEV ";3|" ATGDEV ";4\n"
                        /* HARDWARE OVERLAP (user confirmed 100%): the physical LEFT-NUDGE button and
                         * the START button are two separate buttons but the cabinet sends the SAME
                         * code (14) for both -> indistinguishable to VPX. So DUAL-MAP 14: it stays
@@ -244,7 +256,7 @@ int main(int argc, char **argv)
                         * press closes VPX cleanly back to the cabinet menu, no confirm dialog
                         * (InputManager.cpp ~L776; Exitconfirm only affects a long-ESC hold). */
                        "Mapping.ExitGame = " ATGDEV ";12\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation %d + map L-flip=13 R-flip=5 launch=9 start=14 (+RightNudge=14 dual) Lnudge-action=7 EXIT=12 on " ATGDEV " (NoAutoLayout)", rotation); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation %d + map L-flip=13 R-flip=5 launch=9 start=14 (+RightNudge=14 dual) Lnudge-action=7 EXIT=12 Credit1=9|0|1|3|4 on " ATGDEV " (NoAutoLayout)", rotation); }
 
     /* JOYSTICK DISCOVERY (re-enabled v20). The demo auto-served its ball, so button 9
      * (LaunchBall/plunger) and any COIN/CREDIT button were NEVER actually confirmed. On the
@@ -254,7 +266,7 @@ int main(int argc, char **argv)
      * presses, so we stop guessing. Protocol (screen is blank ~30s, that's normal): press
      * with a pause between each -- PLUNGER x1, START x2, COIN/CREDIT x3 (if the cabinet has
      * one), then any other buttons x4,x5... jstest self-exits, then the table launches. */
-    if (!is_demo) {
+    if (RUN_DISCOVERY && !is_demo) {
         logln("\n===== JOYSTICK DISCOVERY (jstest, <=%ds) -- press PLUNGER x1, START x2, COIN x3, others x4+ =====", DISCOVER_SECONDS);
         pid_t jp = fork();
         if (jp == 0) {
