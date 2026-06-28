@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v11 (playable + AAFactor=0.5 perf: render 1080p->4K) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v12 (playable + AAFactor=0.5 + DisableAO perf tune) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -182,7 +182,13 @@ int main(int argc, char **argv)
                         * #11 profiler: Flip 90% of frame). 0.5 = render 1920x1080 then
                         * upscale to the 4K window -> ~1/4 the fill work. Range is 0.5..2.0
                         * (Settings_properties.inl), so 0.5 is the most perf this lever gives. */
-                       "AAFactor = 0.5\n\n"
+                       "AAFactor = 0.5\n"
+                       /* DisableAO=1: ambient occlusion is DYNAMIC by default (DynamicAO=true,
+                        * Settings_properties.inl L161) = a per-frame GPU pass. AO is subtle
+                        * crevice shading, near-invisible on a moving table -> drop it for a
+                        * small FPS bump with minimal visible cost. REVERT = remove this one
+                        * line to return to build #16 (the confirmed-good baseline). */
+                       "DisableAO = 1\n\n"
                        "[TableOverride]\nViewCabRotation = 180\n\n"
                        "[Input]\n"
                        "Device." ATGDEV ".NoAutoLayout = 1\n"
@@ -191,7 +197,7 @@ int main(int argc, char **argv)
                        "Mapping.LaunchBall = " ATGDEV ";9\n"
                        "Mapping.Start = " ATGDEV ";14\n"
                        "Mapping.LeftNudge = " ATGDEV ";7\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 (render 1080p->4K for perf) + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge=7 on " ATGDEV " (NoAutoLayout)"); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 (perf) + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 nudge=7 on " ATGDEV " (NoAutoLayout)"); }
 
     /* Input discovery (jstest) is DONE -- all core controls are mapped above, so we go
      * straight to VPX now (no blank-screen logger phase). jstest.elf stays in the bundle
