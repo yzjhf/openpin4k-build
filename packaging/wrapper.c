@@ -112,7 +112,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v18 (auto-detect real table; full controls; no auto-close; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v19 (auto-detect real table, skip macOS ._ files; full controls; no auto-close; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -232,8 +232,14 @@ int main(int argc, char **argv)
       if (d) { struct dirent *e;
           while ((e = readdir(d))) {
               const char *nm = e->d_name; size_t L = strlen(nm);
-              if (L > 4 && strcasecmp(nm + L - 4, ".vpx") == 0
-                        && strcmp(nm, "exampleTable.vpx") != 0) {
+              /* Skip dotfiles -- crucially macOS AppleDouble sidecars "._<name>.vpx" that
+               * Finder hides but writes onto exFAT/FAT USB sticks. They end in .vpx but are
+               * tiny metadata, not real tables (VPX rejects them: "not a Visual Pinball
+               * table"). Also covers .DS_Store etc. THIS WAS THE TEST #22 BUG: the harness
+               * picked '._exampleTable.vpx' and bounced back to the menu. */
+              if (nm[0] != '.'
+                  && L > 4 && strcasecmp(nm + L - 4, ".vpx") == 0
+                  && strcmp(nm, "exampleTable.vpx") != 0) {
                   strncpy(table, nm, sizeof table - 1); table[sizeof table - 1] = 0; break;
               }
           }
