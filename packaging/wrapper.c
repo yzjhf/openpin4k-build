@@ -30,9 +30,9 @@
 #define BIN "VPinballX_GL"
 #define JSTEST "jstest.elf"     /* SDL3 joystick-discovery logger, run before VPX */
 #define DISCOVER_SECONDS 40     /* upper bound to wait for the logger (it self-exits ~30s) */
-#define SHOWCASE_SECONDS 70     /* keep a working table on screen this long (play window).
-                                 * Kept + logger time well under the ~127s the cabinet
-                                 * launcher has tolerated, so we aren't killed mid-run. */
+#define SHOWCASE_SECONDS 180    /* play window. Controls are mapped now, so give a real
+                                 * game's worth of time. If the cabinet launcher kills us
+                                 * earlier that's fine (they were already playing). */
 
 /* Cabinet controls device, taken from VPX's OWN log ("VPX UID: ..."), NOT from the
  * jstest logger (which computed the index as _0; VPX uses _1 -- always trust VPX's). */
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v9 (rotation 180 + flippers mapped + discovery) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v10 (rotation 180 + full controls mapped = PLAYABLE) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -166,10 +166,13 @@ int main(int argc, char **argv)
      *   layering its (wrong) auto-guesses on top -- confirmed in InputManager.cpp:
      *   ProcessInput only calls ApplyDefaultDeviceMapping when NoAutoLayout is false;
      *   explicit Mapping.<id> is loaded regardless (InputAction::LoadMapping). Mapping
-     *   string format = "<deviceUID>;<buttonId>" (InputAction.cpp). Button 9 and the
-     *   nudges/start are NOT mapped yet -- jstest re-captures them this run (count
-     *   protocol) so we map them next without guessing. Flippers move on-screen when
-     *   pressed even with no ball, so this is a complete, observable flipper test. */
+     *   string format = "<deviceUID>;<buttonId>" (InputAction.cpp). FULL control set,
+     *   discovered on-cabinet (tests #13 + #14): button 13=Left flipper, 5=Right flipper
+     *   (confirmed working, correct sides), 9=Launch/plunger (seen in both tests' plunger
+     *   slot), 14=Start, 7=Left nudge (press-order + count protocol). Right nudge not yet
+     *   captured -> left unmapped. NoAutoLayout=1 keeps VPX's gamepad auto-guess (which
+     *   mislabels these as A/B/Stick/Shoulder) from being layered on. This is the first
+     *   genuinely PLAYABLE build: start a game (14) -> launch (9) -> flip (13/5). */
     { char inipath[PATH_MAX]; snprintf(inipath, sizeof inipath, "%s/.local/share/VPinballX/10.8/VPinballX.ini", home);
       FILE *ini = fopen(inipath, "w");
       if (ini) { fputs("[Player]\nSyncMode = 0\nShowFPS = 1\nBGSet = 1\n\n"
@@ -177,43 +180,15 @@ int main(int argc, char **argv)
                        "[Input]\n"
                        "Device." ATGDEV ".NoAutoLayout = 1\n"
                        "Mapping.LeftFlipper = " ATGDEV ";13\n"
-                       "Mapping.RightFlipper = " ATGDEV ";5\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: rotation 180 + flippers L=13 R=5 on " ATGDEV " (NoAutoLayout)"); }
+                       "Mapping.RightFlipper = " ATGDEV ";5\n"
+                       "Mapping.LaunchBall = " ATGDEV ";9\n"
+                       "Mapping.Start = " ATGDEV ";14\n"
+                       "Mapping.LeftNudge = " ATGDEV ";7\n", ini); fclose(ini); }
+      logln("[harness] wrote VPinballX.ini: rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 Lnudge=7 on " ATGDEV " (NoAutoLayout)"); }
 
-    /* ---- INPUT DISCOVERY: run the joystick logger BEFORE VPX ----
-     * VPX detects the cabinet pad "ATG game console #1" but its auto-layout doesn't
-     * match the physical buttons, and the pad has 0 axes / 16 buttons / 1 hat, so we
-     * must learn which button INDEX is each control. jstest.elf prints each press's
-     * exact id (the value that goes after the ';' in a Mapping line). The operator
-     * presses the controls in a known order during its ~30s window; we read the
-     * indices from vpx-log.txt. No video here -- the screen may stay blank; that's
-     * expected, the operator presses per the written guide. */
-    {
-        char jp[PATH_MAX]; snprintf(jp, sizeof jp, "%s/" JSTEST, RUN);
-        if (access(jp, F_OK) == 0) {
-            logln("\n================= JOYSTICK DISCOVERY (%s) =================", JSTEST);
-            pid_t jpid = fork();
-            if (jpid == 0) {
-                chdir(RUN);
-                int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
-                if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
-                execl("./" JSTEST, JSTEST, (char *)NULL);
-                fprintf(stderr, "\n[harness] exec of %s failed: %s\n", JSTEST, strerror(errno));
-                _exit(127);
-            }
-            int jst = 0, jdone = 0;
-            for (int s = 0; s < DISCOVER_SECONDS; s++) {
-                if (waitpid(jpid, &jst, WNOHANG) == jpid) { jdone = 1;
-                    logln("[harness] %s finished after ~%ds.", JSTEST, s); break; }
-                sleep(1); sync_log_to_usb();
-            }
-            if (!jdone) { logln("[harness] %s still running after %ds -> stopping it.", JSTEST, DISCOVER_SECONDS);
-                kill(jpid, SIGKILL); waitpid(jpid, &jst, 0); }
-            sync_log_to_usb();
-        } else {
-            logln("[harness] %s not present in bundle -> skipping joystick discovery.", JSTEST);
-        }
-    }
+    /* Input discovery (jstest) is DONE -- all core controls are mapped above, so we go
+     * straight to VPX now (no blank-screen logger phase). jstest.elf stays in the bundle
+     * for any future re-capture (e.g. right nudge), just not run here. */
 
     logln("\n================= LAUNCHING %s =================", BIN);
     pid_t pid = fork();
