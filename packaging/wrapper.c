@@ -112,7 +112,7 @@ int main(int argc, char **argv)
     snprintf(LOGP, sizeof LOGP, "%s/vpx-log.txt", scratch);
 
     { FILE *f = fopen(LOGP, "w"); time_t t = time(NULL);
-      if (f) { fprintf(f, "==== OpenPin4K VPX harness v19 (auto-detect real table, skip macOS ._ files; full controls; no auto-close; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
+      if (f) { fprintf(f, "==== OpenPin4K VPX harness v20 (real-table rotation 90 + jstest re-discovery for plunger/coin; Exit=12) ====\ntime: %sexe dir=%s  cwd=%s\n", ctime(&t), D, cwd); fclose(f); } }
     sync_log_to_usb();
 
     signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
@@ -149,6 +149,34 @@ int main(int argc, char **argv)
     setenv("HOME", home, 1);
     setenv("LD_LIBRARY_PATH", RUN, 1);
     setenv("SDL_VIDEODRIVER", "kmsdrm", 0);
+
+    /* TABLE SELECTION (v18+): community .vpx are NOT redistributable, so they are NOT baked
+     * into the public engine bundle -- CityHands drops a real .vpx into the bundle folder on
+     * the USB. Scan RUNDIR for the first *.vpx that isn't the demo; fall back to the demo if
+     * none. Skip dotfiles -- macOS writes hidden "._<name>.vpx" AppleDouble sidecars onto
+     * exFAT/FAT sticks (the #22 bug: it picked '._exampleTable.vpx'). Done BEFORE writing the
+     * ini so the view rotation can depend on which table runs: real cabinet tables want
+     * ViewCabRotation=90 (grounded -- the catalogue's per-table table.ini for Fast Draw AND
+     * North Star both use 90; test #23 showed Fast Draw 90deg off at 180, needing 90 CCW),
+     * while the VPX demo (exampleTable) wants 180 (bracketed in Phase 1). */
+    char table[PATH_MAX]; strcpy(table, "exampleTable.vpx");
+    { DIR *d = opendir(RUN);
+      if (d) { struct dirent *e;
+          while ((e = readdir(d))) {
+              const char *nm = e->d_name; size_t L = strlen(nm);
+              if (nm[0] != '.'
+                  && L > 4 && strcasecmp(nm + L - 4, ".vpx") == 0
+                  && strcmp(nm, "exampleTable.vpx") != 0) {
+                  strncpy(table, nm, sizeof table - 1); table[sizeof table - 1] = 0; break;
+              }
+          }
+          closedir(d);
+      }
+    }
+    int is_demo = (strcmp(table, "exampleTable.vpx") == 0);
+    int rotation = is_demo ? 180 : 90;
+    if (is_demo) logln("[harness] no community .vpx in RUNDIR -> demo exampleTable.vpx (rotation %d)", rotation);
+    else         logln("[harness] community table -> '%s' (rotation %d)", table, rotation);
 
     /* Pre-seed VPinballX.ini with cabinet settings (VPX reads this path -- proven):
      *   SyncMode=0  : No Sync. Default 3 (Frame Pacing) fails on the GL/ES renderer
@@ -189,9 +217,12 @@ int main(int argc, char **argv)
                         * crevice shading, near-invisible on a moving table -> drop it for a
                         * small FPS bump with minimal visible cost. REVERT = remove this one
                         * line to return to build #16 (the confirmed-good baseline). */
-                       "DisableAO = 1\n\n"
-                       "[TableOverride]\nViewCabRotation = 180\n\n"
-                       "[Input]\n"
+                       "DisableAO = 1\n\n", ini);
+        /* ViewCabRotation depends on the table (see selection block above): 90 for real
+         * cabinet tables (catalogue convention; Fast Draw/North Star inis use 90), 180 for
+         * the VPX demo. [TableOverride] applies to the active table (ViewSetup::Apply...). */
+        fprintf(ini, "[TableOverride]\nViewCabRotation = %d\n\n", rotation);
+        fputs("[Input]\n"
                        "Device." ATGDEV ".NoAutoLayout = 1\n"
                        "Mapping.LeftFlipper = " ATGDEV ";13\n"
                        "Mapping.RightFlipper = " ATGDEV ";5\n"
@@ -213,43 +244,34 @@ int main(int argc, char **argv)
                         * press closes VPX cleanly back to the cabinet menu, no confirm dialog
                         * (InputManager.cpp ~L776; Exitconfirm only affects a long-ESC hold). */
                        "Mapping.ExitGame = " ATGDEV ";12\n", ini); fclose(ini); }
-      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation 180 + map L-flip=13 R-flip=5 launch=9 start=14 (+RightNudge=14 dual) Lnudge-action=7 EXIT=12 on " ATGDEV " (NoAutoLayout)"); }
+      logln("[harness] wrote VPinballX.ini: AAFactor=0.5 + DisableAO=1 + rotation %d + map L-flip=13 R-flip=5 launch=9 start=14 (+RightNudge=14 dual) Lnudge-action=7 EXIT=12 on " ATGDEV " (NoAutoLayout)", rotation); }
 
-    /* Detector removed -- full control set is mapped (incl. Exit=12 and the dual-mapped
-     * left nudge on 14). Straight to VPX; jstest.elf stays bundled for any future use. */
-
-    /* TABLE SELECTION (v18): community .vpx tables are NOT redistributable, so they are
-     * NOT baked into our public engine bundle -- the player (CityHands) drops a real .vpx
-     * into the bundle folder on the USB. Scan RUNDIR for any *.vpx and play the FIRST one
-     * that isn't our bundled demo (exampleTable.vpx); if none is present, fall back to the
-     * demo so the engine still does something. This keeps the GPL engine and the (3rd-party)
-     * table cleanly separate -- the same split the table-manager will produce later. We do
-     * NOT yet apply the catalogue's per-table table.ini: the global VPinballX.ini we seed
-     * (rotation 180 + perf + input map, all cabinet-proven) governs every table, so this
-     * first real-table run changes exactly ONE variable -- the table file itself. */
-    char table[PATH_MAX]; strcpy(table, "exampleTable.vpx");
-    { DIR *d = opendir(RUN);
-      if (d) { struct dirent *e;
-          while ((e = readdir(d))) {
-              const char *nm = e->d_name; size_t L = strlen(nm);
-              /* Skip dotfiles -- crucially macOS AppleDouble sidecars "._<name>.vpx" that
-               * Finder hides but writes onto exFAT/FAT USB sticks. They end in .vpx but are
-               * tiny metadata, not real tables (VPX rejects them: "not a Visual Pinball
-               * table"). Also covers .DS_Store etc. THIS WAS THE TEST #22 BUG: the harness
-               * picked '._exampleTable.vpx' and bounced back to the menu. */
-              if (nm[0] != '.'
-                  && L > 4 && strcasecmp(nm + L - 4, ".vpx") == 0
-                  && strcmp(nm, "exampleTable.vpx") != 0) {
-                  strncpy(table, nm, sizeof table - 1); table[sizeof table - 1] = 0; break;
-              }
-          }
-          closedir(d);
-      }
+    /* JOYSTICK DISCOVERY (re-enabled v20). The demo auto-served its ball, so button 9
+     * (LaunchBall/plunger) and any COIN/CREDIT button were NEVER actually confirmed. On the
+     * real EM table (Fast Draw, test #23) no ball reaches play and the flippers stay dead --
+     * exactly what an EM table looks like in attract mode with no ball. Before launching the
+     * table we run jstest.elf, which logs the EXACT index of every physical button CityHands
+     * presses, so we stop guessing. Protocol (screen is blank ~30s, that's normal): press
+     * with a pause between each -- PLUNGER x1, START x2, COIN/CREDIT x3 (if the cabinet has
+     * one), then any other buttons x4,x5... jstest self-exits, then the table launches. */
+    if (!is_demo) {
+        logln("\n===== JOYSTICK DISCOVERY (jstest, <=%ds) -- press PLUNGER x1, START x2, COIN x3, others x4+ =====", DISCOVER_SECONDS);
+        pid_t jp = fork();
+        if (jp == 0) {
+            chdir(RUN);
+            int fd = open(LOGP, O_WRONLY|O_CREAT|O_APPEND, 0644);
+            if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+            execl("./" JSTEST, JSTEST, (char *)NULL);
+            _exit(127);
+        }
+        int js = 0; time_t t0 = time(NULL);
+        for (;;) {
+            if (waitpid(jp, &js, WNOHANG) == jp) break;
+            if (time(NULL) - t0 > DISCOVER_SECONDS) { kill(jp, SIGTERM); waitpid(jp, &js, 0); break; }
+            sleep(1); sync_log_to_usb();
+        }
+        logln("[harness] jstest discovery finished -- now launching the table.");
     }
-    if (strcmp(table, "exampleTable.vpx") == 0)
-        logln("[harness] no community .vpx found in RUNDIR -> playing bundled demo exampleTable.vpx");
-    else
-        logln("[harness] community table found -> playing '%s'", table);
 
     logln("\n================= LAUNCHING %s (%s) =================", BIN, table);
     pid_t pid = fork();
